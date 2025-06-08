@@ -1,3 +1,10 @@
+---
+license: mit
+title: ML PLAYGROUND
+sdk: streamlit
+emoji: 📊
+short_description: Train ML Modes with your dataset!
+---
 # ✅ FILE: README.md
 
 # 🧠 ML Playground
