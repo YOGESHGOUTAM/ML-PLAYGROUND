@@ -4,6 +4,7 @@ title: ML PLAYGROUND
 sdk: streamlit
 emoji: 📊
 short_description: Train ML Modes with your dataset!
+sdk_version: 1.45.1
 ---
 # ✅ FILE: README.md
 
