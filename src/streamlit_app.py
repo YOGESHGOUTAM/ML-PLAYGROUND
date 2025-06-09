@@ -1,40 +1,36 @@
 import streamlit as st
 import pandas as pd
-from sklearn.mode_selection import train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report
+from sklearn.metrics import accuracy_score
 
-st.title("ML PLAYGROUND")
+st.title("🤖 ML Playground")
+st.write("Upload a CSV file, select target and features, and train a model!")
 
-uploaded_file=st.file_uploader("Drop your File Here!!",type=["csv"])
+# Upload CSV
+uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
 if uploaded_file:
-	df=pd.read_csv(uploaded_file)
-	st.subheader("Dataset Preview")
-	st.dataframe(df.head())
-	
-	target=st.selectbox("Select Target Column", df.columns)
-	
-	#NOW SELECT FEATURES
-	 
-	features_columns=[col for col in df.columns if col!=target]
+    df = pd.read_csv(uploaded_file)
+    st.write("📊 Preview of Dataset:", df.head())
 
-	features=st.multiselect("Select Feature Columns",feature_columns,default=feature_columns)
+    all_columns = df.columns.tolist()
+    
+    # Column selection
+    target = st.selectbox("🎯 Select target column", all_columns)
+    features = st.multiselect("🧠 Select feature columns", [col for col in all_columns if col != target])
 
-    if st.button("Train Model"):
-        X=df[features]
-        y=df[target]
+    if features and target:
+        if st.button("Train Model"):
+            # Split and train
+            X = df[features]
+            y = df[target]
 
-        X_train,X_test,y_train,y_test=train_test_split(X,y,test_size=0.3,random_state=42)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        model=RandomForestClassifier()
-        model.fit(X_train,y_train)
+            model = RandomForestClassifier()
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
 
-        y_pred=model.predict(X_test)
-
-        st.subheader("Classification Report")
-        st.text(classification_report(y_test,y_pred))
-        
-        
-        
-        
+            acc = accuracy_score(y_test, y_pred)
+            st.success(f"✅ Model Trained! Accuracy: {acc:.2f}")
