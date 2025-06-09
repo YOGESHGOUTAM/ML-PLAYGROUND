@@ -14,6 +14,10 @@ if uploaded_file:
     df = pd.read_csv(uploaded_file)
     st.write("📊 Preview of Dataset:", df.head())
 
+    non_floats_cols=df.select_dtypes(exclude=['float64']).columns.tolist()
+    st.write("Non-Float Columns:",non_float_cols)
+
+    
     all_columns = df.columns.tolist()
     
     # Column selection
@@ -22,6 +26,14 @@ if uploaded_file:
 
     if features and target:
         if st.button("Train Model"):
+
+            from sklearn.preprocessing import LabelEncoder
+            from sklearn.metrics import accuracy_score
+
+            df_encoded=df.copy()
+            for col in [target]+features:
+                if df_encoded[col].dtype=='object':
+                    df_encoded[col]=LabelEncoder().fit_transform(df_encoded[col])
             # Split and train
             X = df[features]
             y = df[target]
