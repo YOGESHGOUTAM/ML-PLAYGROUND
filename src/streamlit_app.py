@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.neural_network import MLPClassifier # New import for Neural Network
+from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 import numpy as np
@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Set wide layout for better display
-st.set_page_config(layout="wide") 
+st.set_page_config(layout="wide")
 
 st.title("🤖 ML Playground")
 st.write("Upload a CSV file, select target and features, train a model, and see results!")
@@ -42,7 +42,7 @@ if uploaded_file:
             )
     else:
         st.sidebar.info("No categorical columns detected for encoding.")
-        
+
     # Get all column names from the original DataFrame
     all_columns = df.columns.tolist()
 
@@ -77,7 +77,7 @@ if uploaded_file:
         except ValueError:
             st.error("Invalid format for hidden layer sizes. Please enter comma-separated integers.")
             model_params['hidden_layer_sizes'] = (100,) # Fallback to default
-        
+
         # Activation function selection
         model_params['activation'] = st.selectbox(
             "Activation Function",
@@ -99,7 +99,7 @@ if uploaded_file:
             step=50,
             help="Maximum number of iterations for the solver to converge."
         )
-    
+
     # Only enable the train button if features and target are selected
     if feature_columns and target_column:
         if st.button("Train Model", help="Click to apply selected preprocessing and train the model."):
@@ -108,146 +108,123 @@ if uploaded_file:
             df_processed = df.copy() # Create a copy of the DataFrame to apply transformations
 
             # Keep track of original feature columns selected by the user.
-            # This is crucial because One-Hot Encoding will replace original columns with new ones.
             original_selected_features = list(feature_columns)
-            
+
             # Apply encoding based on user choices from the sidebar
             for col in categorical_cols:
                 # Check if the column was chosen for encoding and still exists in the DataFrame
                 if col in encoder_choices and encoder_choices[col] != "None" and col in df_processed.columns:
                     if encoder_choices[col] == "Label Encoding":
                         try:
-                            # Apply Label Encoding (converts categories to numerical labels)
                             le = LabelEncoder()
-                            df_processed[col] = le.fit_transform(df_processed[col])
+                            df_processed[col] = le.fit_transform(df_processed[col].astype(str)) # Convert to string first
                             st.write(f"Applied Label Encoding to '{col}'.")
                         except Exception as e:
                             st.error(f"Error applying Label Encoding to '{col}': {e}")
-                            st.stop() # Stop execution on error
+                            st.stop()
                     elif encoder_choices[col] == "One-Hot Encoding":
                         try:
-                            # Convert column to string type to handle potential mixed types before OHE
-                            df_processed[col] = df_processed[col].astype(str)
-
-                            # Apply One-Hot Encoding (creates new binary columns for each category)
+                            df_processed[col] = df_processed[col].astype(str) # Ensure string type for OHE
                             ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
-                            # Fit and transform the column, ensuring it's a 2D array for OHE
                             ohe_array = ohe.fit_transform(df_processed[[col]])
-                            # Create a new DataFrame from the one-hot encoded array with appropriate column names
                             ohe_df = pd.DataFrame(ohe_array, columns=ohe.get_feature_names_out([col]), index=df_processed.index)
-
-                            # Drop the original categorical column from the processed DataFrame
                             df_processed = df_processed.drop(columns=[col])
-                            
-                            # Concatenate the new one-hot encoded columns to the processed DataFrame
                             df_processed = pd.concat([df_processed, ohe_df], axis=1)
-
                             st.write(f"Applied One-Hot Encoding to '{col}'. New columns created: {', '.join(ohe_df.columns.tolist())}")
                         except Exception as e:
                             st.error(f"Error applying One-Hot Encoding to '{col}': {e}")
-                            st.stop() # Stop execution on error
+                            st.stop()
 
             # Now, identify the actual feature columns to use for the model from the processed DataFrame.
-            # This accounts for original features that might have been replaced by One-Hot Encoded columns.
             final_features_for_model = []
             for feat in original_selected_features:
                 if feat in df_processed.columns:
-                    # If the original feature still exists (e.g., it was numeric or label encoded)
                     final_features_for_model.append(feat)
                 else:
-                    # If the original feature was one-hot encoded, find the new OHE columns.
-                    # This assumes OHE column names start with the original column name as a prefix.
                     ohe_cols = [c for c in df_processed.columns if c.startswith(f"{feat}_")]
                     final_features_for_model.extend(ohe_cols)
-            
-            # Ensure all identified final features actually exist in the processed DataFrame
+
             final_features_for_model = [f for f in final_features_for_model if f in df_processed.columns]
 
             if not final_features_for_model:
                 st.error("No valid feature columns found after preprocessing. Please check your selections and encoding choices.")
-                st.stop() # Stop if no features are left
+                st.stop()
 
             X = df_processed[final_features_for_model] # Features DataFrame
             y = df_processed[target_column] # Target Series (name remains the same)
 
-            # Check for non-numeric data in X (features) before training
-            non_numeric_X = X.select_dtypes(exclude=np.number).columns.tolist()
-            if non_numeric_X:
-                st.error(f"Error: Feature columns '{non_numeric_X}' contain non-numeric data even after encoding. Please ensure all features are numeric.")
-                st.stop()
-            
+            # --- Robust Numerical Conversion for Features (X) ---
+            st.info("Converting all feature columns to numeric. Non-convertible values will become NaN.")
+            for col in X.columns:
+                # Attempt to convert column to numeric, coercing errors to NaN
+                X[col] = pd.to_numeric(X[col], errors='coerce')
+            # --- End Robust Numerical Conversion ---
+
             # Check if the target column is non-numeric. For classification, it needs to be numeric.
-            # Convert target to numeric using LabelEncoder if it's not already
             if not pd.api.types.is_numeric_dtype(y):
                 try:
                     le_target = LabelEncoder()
-                    y = le_target.fit_transform(y)
-                    # Store classes for later (e.g., confusion matrix labels)
-                    target_classes = le_target.classes_ 
+                    y = le_target.fit_transform(y.astype(str)) # Convert target to string first
+                    target_classes = le_target.classes_
                     st.write(f"Auto-applied Label Encoding to target column '{target_column}' as it was non-numeric for classification.")
                 except Exception as e:
                     st.error(f"Error: Target column '{target_column}' is non-numeric and could not be auto-encoded. Please ensure it's suitable for classification: {e}")
                     st.stop()
             else:
-                target_classes = np.unique(y) # Get unique numeric classes directly
+                target_classes = np.unique(y)
 
             # Ensure X and y have consistent indices, which is crucial after concatenating/dropping columns.
             X, y = X.align(y, join='inner', axis=0)
 
-            # Check if there are still missing values after processing.
-            # For this example, rows with NaNs are dropped. In a production app, you might offer imputation.
+            # Check for missing values after conversion and drop rows with NaNs
             if X.isnull().sum().sum() > 0 or pd.Series(y).isnull().sum() > 0:
-                st.warning("Missing values detected in features or target after encoding. Dropping rows with NaNs.")
+                initial_rows = len(X)
+                st.warning("Missing values detected in features or target after encoding/conversion. Dropping rows with NaNs.")
                 # Combine X and y temporarily to drop rows where either has NaN
                 combined_df = pd.concat([X, pd.Series(y, name='target')], axis=1).dropna()
                 X = combined_df[X.columns]
                 y = combined_df['target']
-                st.info(f"Dropped rows with missing values. Remaining samples: {len(X)}")
+                st.info(f"Dropped {initial_rows - len(X)} rows with missing values. Remaining samples: {len(X)}")
 
-            # Check if any valid data remains after processing and handling missing values
             if len(X) == 0:
                 st.error("No valid data remaining after preprocessing and handling missing values. Cannot train model.")
                 st.stop()
-            
-            # Split and train the model
+
             try:
-                # Ensure enough samples for splitting into train and test sets
                 if len(X) < 2:
                     st.error("Not enough samples in your dataset to split into train and test sets. Need at least 2 samples.")
                     st.stop()
-                
-                # Adjust test_size for very small datasets to ensure at least one sample in test set
+
                 test_size_val = 0.2
-                if len(X) * test_size_val < 1 and len(X) >=1: # If test set would be empty but data exists
-                    test_size_val = 1 / len(X) # Ensure at least one sample in test set
+                if len(X) * test_size_val < 1 and len(X) >=1:
+                    test_size_val = 1 / len(X)
                 elif len(X) == 1:
                      st.error("Cannot split a single sample into train and test sets.")
                      st.stop()
 
-
-                # Perform train-test split. Stratify if the target has multiple unique classes.
-                # Only stratify if target has more than one unique value
                 if pd.Series(y).nunique() > 1:
                     X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=test_size_val, random_state=42, 
-                        stratify=y 
+                        X, y, test_size=test_size_val, random_state=42,
+                        stratify=y
                     )
-                else: # If target has only one unique value, stratification is not possible
+                else:
                     X_train, X_test, y_train, y_test = train_test_split(
                         X, y, test_size=test_size_val, random_state=42
                     )
 
-                # Check if the training target set has only one class, which causes issues for classifiers
                 if len(np.unique(y_train)) < 2:
                     st.error("Target variable in training set has only one class after split. Cannot train a classifier. Please check your data or target selection.")
                     st.stop()
-                
-                # Initialize and train the selected model
+
                 model = None
                 if model_choice == "Random Forest Classifier":
                     model = RandomForestClassifier(random_state=42)
                     st.subheader(f"Training Random Forest Classifier")
                 elif model_choice == "Neural Network (MLP Classifier)":
+                    # Ensure hidden_layer_sizes is a tuple
+                    if 'hidden_layer_sizes' in model_params and not isinstance(model_params['hidden_layer_sizes'], tuple):
+                         model_params['hidden_layer_sizes'] = (model_params['hidden_layer_sizes'],)
+                    
                     model = MLPClassifier(random_state=42, **model_params)
                     st.subheader(f"Training Neural Network (MLP Classifier)")
 
@@ -257,28 +234,23 @@ if uploaded_file:
                 # --- Display Model Evaluation ---
                 st.success(f"✅ Model Trained! ({model_choice})")
                 st.subheader("📊 Model Evaluation")
-                
-                # Accuracy Score
+
                 acc = accuracy_score(y_test, y_pred)
                 st.metric(label="Accuracy", value=f"{acc:.2f}")
 
-                # Classification Report
                 st.write("### Classification Report")
-                # Ensure labels are string for better report display if they were numeric
                 report = classification_report(y_test, y_pred, target_names=[str(c) for c in target_classes], output_dict=True)
-                # Convert to DataFrame for better display
                 st.dataframe(pd.DataFrame(report).T)
 
-                # Confusion Matrix
                 st.write("### Confusion Matrix")
                 cm = confusion_matrix(y_test, y_pred)
                 fig, ax = plt.subplots(figsize=(6, 5))
                 sns.heatmap(
-                    cm, 
-                    annot=True, 
-                    fmt="d", 
-                    cmap="Blues", 
-                    xticklabels=[str(c) for c in target_classes], 
+                    cm,
+                    annot=True,
+                    fmt="d",
+                    cmap="Blues",
+                    xticklabels=[str(c) for c in target_classes],
                     yticklabels=[str(c) for c in target_classes],
                     ax=ax
                 )
@@ -286,9 +258,8 @@ if uploaded_file:
                 ax.set_xlabel('Predicted Label')
                 ax.set_title('Confusion Matrix')
                 st.pyplot(fig)
-                plt.close(fig) # Close the figure to free up memory
+                plt.close(fig)
 
-                # Feature Importances (for Random Forest only)
                 if model_choice == "Random Forest Classifier":
                     st.write("### Feature Importances (Random Forest)")
                     importances = model.feature_importances_
@@ -296,7 +267,7 @@ if uploaded_file:
                         'Feature': final_features_for_model,
                         'Importance': importances
                     }).sort_values(by='Importance', ascending=False)
-                    
+
                     fig_importance, ax_importance = plt.subplots(figsize=(10, 6))
                     sns.barplot(x='Importance', y='Feature', data=features_df, ax=ax_importance)
                     ax_importance.set_title('Feature Importances')
