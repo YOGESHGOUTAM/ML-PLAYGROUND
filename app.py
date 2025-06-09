@@ -279,10 +279,14 @@ if uploaded_file:
             # Clear previous encoder state before training
             st.session_state.ohe_encoders = {}
             st.session_state.manual_numeric_mappings = {}
+            st.session_state.encoder_choices = {} # Clear this too
 
 
             for col in categorical_cols:
-                if col in encoder_choices_current_run and encoder_choices_current_run[col] != "None" and col in df_processed.columns:
+                # Store the encoder choice for this column for prediction application
+                st.session_state.encoder_choices[col] = encoder_choices_current_run.get(col, "None") 
+
+                if encoder_choices_current_run[col] != "None" and col in df_processed.columns:
                     df_processed[col] = df_processed[col].astype(str)
 
                     if encoder_choices_current_run[col] == "Label Encoding":
@@ -300,14 +304,11 @@ if uploaded_file:
                             ohe_array = ohe.fit_transform(df_processed[[col]])
                             ohe_df = pd.DataFrame(ohe_array, columns=ohe.get_feature_names_out([col]), index=df_processed.index)
                             
-                            # Update df_processed correctly
                             df_processed = df_processed.drop(columns=[col]) 
                             df_processed = pd.concat([df_processed, ohe_df], axis=1)
                             st.write(f"Applied One-Hot Encoding to '{col}'. New columns created: {', '.join(ohe_df.columns.tolist())}")
                             
-                            # Store the fitted OHE for prediction
                             st.session_state.ohe_encoders[col] = ohe
-                            # Map original feature to its new OHE columns for future reference
                             st.session_state.original_feature_cols_map[col] = ohe.get_feature_names_out([col]).tolist()
                         except Exception as e:
                             st.error(f"Error applying One-Hot Encoding to '{col}': {e}")
@@ -323,27 +324,27 @@ if uploaded_file:
                             df_processed[col] = df_processed[col].map(mapping)
                             st.write(f"Applied Custom Numeric Mapping to '{col}': {mapping}")
                             
-                            # Store the custom mapping for prediction
                             st.session_state.manual_numeric_mappings[col] = mapping
                         except Exception as e:
                             st.error(f"Error applying Custom Numeric Mapping to '{col}': {e}. Please check your manual value inputs.")
                             st.stop()
-            # Store the encoder choices for this column for prediction application
-            st.session_state.encoder_choices[col] = encoder_choices_current_run.get(col, "None") # Ensure all original categorical_cols are accounted for.
+            
+            # For any categorical columns NOT selected for encoding, their choice defaults to "None"
+            # And they will be handled by the numeric conversion and NaN dropping later
+            for col in [c for c in categorical_cols if c not in st.session_state.encoder_choices]:
+                 st.session_state.encoder_choices[col] = "None"
 
 
             final_features_for_model = []
-            for feat in feature_columns: # Iterate over original feature_columns
-                if feat in df_processed.columns: # If feature was not OHE'd or directly numeric
+            for feat in feature_columns:
+                if feat in df_processed.columns:
                     final_features_for_model.append(feat)
-                else: # If feature was OHE'd
-                    # Use the stored mapping to find the new OHE column names
+                else:
                     ohe_cols_for_feat = st.session_state.original_feature_cols_map.get(feat, [])
                     final_features_for_model.extend(ohe_cols_for_feat)
 
-            # Ensure all identified final features actually exist in the processed DataFrame
             final_features_for_model = [f for f in final_features_for_model if f in df_processed.columns]
-            st.session_state.final_features_for_model = final_features_for_model # Store for prediction
+            st.session_state.final_features_for_model = final_features_for_model
 
             if not final_features_for_model:
                 st.error("No valid feature columns found after preprocessing. Please check your selections and encoding choices.")
@@ -363,7 +364,7 @@ if uploaded_file:
                         le_target = LabelEncoder()
                         y = le_target.fit_transform(y.astype(str))
                         target_classes_current_run = le_target.classes_
-                        st.session_state.le_target = le_target # Store for inverse transform during prediction
+                        st.session_state.le_target = le_target
                         st.write(f"Auto-applied Label Encoding to target column '{target_column}' as it was non-numeric for classification.")
                     except Exception as e:
                         st.error(f"Error: Target column '{target_column}' is non-numeric and could not be auto-encoded. Please ensure it's suitable for classification: {e}")
@@ -749,4 +750,3 @@ else:
     if uploaded_file:
         st.info("Train a model first to enable the prediction feature.")
     # No message needed if no file uploaded at all, initial message covers it.
-
