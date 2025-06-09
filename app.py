@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor # Added RandomForestRegressor
 from sklearn.neural_network import MLPClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, mean_squared_error, r2_score # Added regression metrics
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.linear_model import LinearRegression # Added LinearRegression
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -36,11 +37,10 @@ if uploaded_file:
     if categorical_cols:
         st.sidebar.write("Select encoding method for categorical columns:")
         for col in categorical_cols:
-            # Create a selectbox in the sidebar for each categorical column
             encoder_choices[col] = st.sidebar.selectbox(
                 f"Encoder for '{col}'",
                 ("None", "Label Encoding", "One-Hot Encoding", "Custom Numeric Mapping"),
-                key=f"encoder_choice_{col}" # Unique key for each selectbox
+                key=f"encoder_choice_{col}"
             )
 
             if encoder_choices[col] == "Custom Numeric Mapping":
@@ -69,9 +69,39 @@ if uploaded_file:
 
     # Model Selection
     st.header("✨ Model Selection")
+
+    # Determine if the target column is likely continuous or discrete based on initial data
+    is_target_continuous = False
+    if target_column:
+        temp_target_series = df[target_column].copy()
+        # Attempt to convert to numeric, coerce errors to NaN
+        temp_target_series = pd.to_numeric(temp_target_series, errors='coerce').dropna()
+
+        # If it's numeric, check for number of unique values vs. total length to infer type
+        if pd.api.types.is_numeric_dtype(temp_target_series):
+            if len(temp_target_series) > 0 and temp_target_series.nunique() / len(temp_target_series) > 0.05: # Heuristic: if more than 5% unique values
+                is_target_continuous = True # Likely continuous
+            elif temp_target_series.nunique() > 10: # More than 10 unique values for numeric target
+                is_target_continuous = True # Also treat as continuous
+            else:
+                # If numeric but few unique values, could be classification
+                pass
+        # If not numeric, it's definitely not continuous unless encoded to be so
+        else:
+             is_target_continuous = False
+
+
+    model_options = []
+    if is_target_continuous:
+        model_options = ["Linear Regression", "Random Forest Regressor"]
+        st.info("Target column appears to be **continuous**. Only regression models are available.")
+    else:
+        model_options = ["Random Forest Classifier", "Neural Network (MLP Classifier)"]
+        st.info("Target column appears to be **categorical**. Only classification models are available.")
+
     model_choice = st.selectbox(
         "Choose your Machine Learning Model",
-        ("Random Forest Classifier", "Neural Network (MLP Classifier)")
+        model_options
     )
 
     # Model-specific parameters
@@ -123,32 +153,26 @@ if uploaded_file:
     )
     test_size_val = test_size_percent / 100.0
 
-    # Initialize threshold_classification to None, will only be set if applicable
-    threshold_classification = None
+    threshold_classification = None # Initialize to None
 
-    if feature_columns and target_column:
-        # Check if the target column is already numeric
-        is_target_numeric_before_processing = pd.api.types.is_numeric_dtype(df[target_column])
-        
-        # Temporarily get unique values for the target to determine if it's binary after potential auto-encoding
-        temp_y = df[target_column].copy()
-        if not is_target_numeric_before_processing:
+    # Only show threshold option for binary classification and if a classifier is selected
+    if target_column and not is_target_continuous and model_choice in ["Random Forest Classifier", "Neural Network (MLP Classifier)"]:
+        temp_y_for_threshold_check = df[target_column].copy()
+        if not pd.api.types.is_numeric_dtype(temp_y_for_threshold_check):
             try:
                 le_temp = LabelEncoder()
-                temp_y = le_temp.fit_transform(temp_y.astype(str))
+                temp_y_for_threshold_check = le_temp.fit_transform(temp_y_for_threshold_check.astype(str))
             except:
-                pass # If auto-encoding fails, it will be caught later
-
-        # Only show threshold option for binary classification after potential auto-encoding
-        if len(np.unique(temp_y)) == 2:
-            st.write("---") # Separator for visual clarity
+                pass
+        if len(np.unique(temp_y_for_threshold_check)) == 2:
+            st.write("---")
             st.subheader("Binary Classification Threshold")
             st.info("Adjust this threshold to classify probabilities into classes.")
             threshold_classification = st.slider(
                 "Prediction Threshold",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.5, # Default threshold
+                value=0.5,
                 step=0.01,
                 help="Probability threshold for positive class classification (0.0 to 1.0)."
             )
@@ -218,17 +242,26 @@ if uploaded_file:
             for col in X.columns:
                 X[col] = pd.to_numeric(X[col], errors='coerce')
 
-            if not pd.api.types.is_numeric_dtype(y):
-                try:
-                    le_target = LabelEncoder()
-                    y = le_target.fit_transform(y.astype(str))
-                    target_classes = le_target.classes_
-                    st.write(f"Auto-applied Label Encoding to target column '{target_column}' as it was non-numeric for classification.")
-                except Exception as e:
-                    st.error(f"Error: Target column '{target_column}' is non-numeric and could not be auto-encoded. Please ensure it's suitable for classification: {e}")
-                    st.stop()
-            else:
-                target_classes = np.unique(y)
+            # Handle target column based on model type (classifier vs regressor)
+            target_classes = [] # Initialize for classifiers
+            if model_choice in ["Random Forest Classifier", "Neural Network (MLP Classifier)"]:
+                if not pd.api.types.is_numeric_dtype(y):
+                    try:
+                        le_target = LabelEncoder()
+                        y = le_target.fit_transform(y.astype(str))
+                        target_classes = le_target.classes_
+                        st.write(f"Auto-applied Label Encoding to target column '{target_column}' as it was non-numeric for classification.")
+                    except Exception as e:
+                        st.error(f"Error: Target column '{target_column}' is non-numeric and could not be auto-encoded. Please ensure it's suitable for classification: {e}")
+                        st.stop()
+                else:
+                    target_classes = np.unique(y) # Get unique numeric classes directly
+            elif model_choice in ["Linear Regression", "Random Forest Regressor"]:
+                # For regression, ensure target is numeric. Coerce errors to NaN and drop.
+                y = pd.to_numeric(y, errors='coerce')
+                if y.isnull().any():
+                    st.warning(f"Missing values introduced in target column '{target_column}' during numeric conversion for regression. These rows will be dropped.")
+                # No target_classes for regression
 
             X, y = X.align(y, join='inner', axis=0)
 
@@ -248,30 +281,31 @@ if uploaded_file:
                 if len(X) < 2:
                     st.error("Not enough samples in your dataset to split into train and test sets. Need at least 2 samples.")
                     st.stop()
-                
-                # Check for minimum 2 samples per class for stratification
-                # Only attempt to stratify if all classes have at least 2 samples
-                stratify_needed = False
-                if pd.Series(y).nunique() > 1: # Only stratify if multiple classes exist
+
+                # Determine if stratification is needed and possible
+                stratify_y = None
+                if model_choice in ["Random Forest Classifier", "Neural Network (MLP Classifier)"] and pd.Series(y).nunique() > 1:
                     class_counts = pd.Series(y).value_counts()
+                    # Check if every class has at least 2 members for stratification
                     if all(count >= 2 for count in class_counts):
-                        stratify_needed = True
+                        stratify_y = y
                     else:
                         st.warning("Cannot perform stratified split because some classes have less than 2 members. Proceeding with non-stratified split.")
+                # For regression, do not stratify
+                elif model_choice in ["Linear Regression", "Random Forest Regressor"]:
+                    stratify_y = None
 
-                if stratify_needed:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=test_size_val, random_state=42,
-                        stratify=y
-                    )
-                else:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=test_size_val, random_state=42
-                    )
 
-                if len(np.unique(y_train)) < 2:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size_val, random_state=42,
+                    stratify=stratify_y
+                )
+
+                # Specific check for classification models if training target has only one class
+                if model_choice in ["Random Forest Classifier", "Neural Network (MLP Classifier)"] and len(np.unique(y_train)) < 2:
                     st.error("Target variable in training set has only one class after split. Cannot train a classifier. Please check your data or target selection.")
                     st.stop()
+
 
                 model = None
                 if model_choice == "Random Forest Classifier":
@@ -282,63 +316,82 @@ if uploaded_file:
                          model_params['hidden_layer_sizes'] = (model_params['hidden_layer_sizes'],)
                     model = MLPClassifier(random_state=42, **model_params)
                     st.subheader(f"Training Neural Network (MLP Classifier)")
+                elif model_choice == "Linear Regression":
+                    model = LinearRegression()
+                    st.subheader(f"Training Linear Regression Model")
+                elif model_choice == "Random Forest Regressor":
+                    model = RandomForestRegressor(random_state=42)
+                    st.subheader(f"Training Random Forest Regressor")
+
 
                 model.fit(X_train, y_train)
-
-                # --- Apply threshold for binary classification if applicable ---
-                y_pred_final = None
-                if len(target_classes) == 2 and threshold_classification is not None:
-                    # Get probabilities for the positive class (assuming class 1 is positive)
-                    # Need to know which column corresponds to which class
-                    # For binary classification, predict_proba returns columns in sorted order of class labels.
-                    # We assume the LabelEncoder maps to 0 and 1, so 1 is the second column.
-                    y_proba = model.predict_proba(X_test)
-                    # Check if the model outputs probabilities for more than one class.
-                    # It's usually safe to assume the second column is the positive class probability if
-                    # the target was encoded to 0 and 1.
-                    if y_proba.shape[1] == 2:
-                        # y_proba[:, 1] is the probability of the positive class (class 1)
-                        y_pred_final = (y_proba[:, 1] >= threshold_classification).astype(int)
-                        st.write(f"Predictions made using a threshold of **{threshold_classification}**.")
-                    else:
-                        st.warning("Model's predict_proba output is not suitable for binary thresholding. Using direct predictions.")
-                        y_pred_final = model.predict(X_test) # Fallback to direct predict
-                else:
-                    y_pred_final = model.predict(X_test) # Use direct predict for non-binary or no threshold set
-
+                y_pred = model.predict(X_test)
 
                 # --- Display Model Evaluation ---
                 st.success(f"✅ Model Trained! ({model_choice})")
                 st.subheader("📊 Model Evaluation")
 
-                # Use y_pred_final for all metrics
-                acc = accuracy_score(y_test, y_pred_final)
-                st.metric(label="Accuracy", value=f"{acc:.2f}")
+                if model_choice in ["Random Forest Classifier", "Neural Network (MLP Classifier)"]:
+                    # Apply threshold for binary classification if applicable
+                    y_pred_final_classification = y_pred
+                    if len(target_classes) == 2 and threshold_classification is not None:
+                        # Check if model has predict_proba and if it outputs probabilities
+                        if hasattr(model, 'predict_proba') and model.predict_proba(X_test).shape[1] == 2:
+                            y_proba = model.predict_proba(X_test)
+                            y_pred_final_classification = (y_proba[:, 1] >= threshold_classification).astype(int)
+                            st.write(f"Predictions made using a threshold of **{threshold_classification}**.")
+                        else:
+                            st.warning("Model does not support `predict_proba` or output is not binary. Using direct predictions for classification metrics.")
 
-                st.write("### Classification Report")
-                report = classification_report(y_test, y_pred_final, target_names=[str(c) for c in target_classes], output_dict=True, zero_division=0)
-                st.dataframe(pd.DataFrame(report).T)
+                    acc = accuracy_score(y_test, y_pred_final_classification)
+                    st.metric(label="Accuracy", value=f"{acc:.2f}")
 
-                st.write("### Confusion Matrix")
-                cm = confusion_matrix(y_test, y_pred_final)
-                fig, ax = plt.subplots(figsize=(6, 5))
-                sns.heatmap(
-                    cm,
-                    annot=True,
-                    fmt="d",
-                    cmap="Blues",
-                    xticklabels=[str(c) for c in target_classes],
-                    yticklabels=[str(c) for c in target_classes],
-                    ax=ax
-                )
-                ax.set_ylabel('Actual Label')
-                ax.set_xlabel('Predicted Label')
-                ax.set_title('Confusion Matrix')
-                st.pyplot(fig)
-                plt.close(fig)
+                    st.write("### Classification Report")
+                    report = classification_report(y_test, y_pred_final_classification, target_names=[str(c) for c in target_classes], output_dict=True, zero_division=0)
+                    st.dataframe(pd.DataFrame(report).T)
 
-                if model_choice == "Random Forest Classifier":
-                    st.write("### Feature Importances (Random Forest)")
+                    st.write("### Confusion Matrix")
+                    cm = confusion_matrix(y_test, y_pred_final_classification)
+                    fig, ax = plt.subplots(figsize=(6, 5))
+                    sns.heatmap(
+                        cm,
+                        annot=True,
+                        fmt="d",
+                        cmap="Blues",
+                        xticklabels=[str(c) for c in target_classes],
+                        yticklabels=[str(c) for c in target_classes],
+                        ax=ax
+                    )
+                    ax.set_ylabel('Actual Label')
+                    ax.set_xlabel('Predicted Label')
+                    ax.set_title('Confusion Matrix')
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+                elif model_choice in ["Linear Regression", "Random Forest Regressor"]:
+                    # Regression Metrics
+                    mse = mean_squared_error(y_test, y_pred)
+                    rmse = np.sqrt(mse)
+                    r2 = r2_score(y_test, y_pred)
+
+                    st.metric(label="Mean Squared Error (MSE)", value=f"{mse:.2f}")
+                    st.metric(label="Root Mean Squared Error (RMSE)", value=f"{rmse:.2f}")
+                    st.metric(label="R-squared (R²)", value=f"{r2:.2f}")
+
+                    st.write("### Actual vs. Predicted Values Plot")
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    ax.scatter(y_test, y_pred, alpha=0.7)
+                    ax.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2) # Perfect prediction line
+                    ax.set_xlabel('Actual Values')
+                    ax.set_ylabel('Predicted Values')
+                    ax.set_title('Actual vs. Predicted Values')
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+
+                # Feature Importances (for Random Forest Classifier/Regressor only)
+                if model_choice in ["Random Forest Classifier", "Random Forest Regressor"]:
+                    st.write("### Feature Importances")
                     importances = model.feature_importances_
                     features_df = pd.DataFrame({
                         'Feature': final_features_for_model,
@@ -355,7 +408,11 @@ if uploaded_file:
 
                 st.write("---")
                 st.write("First 10 Actual vs. Predicted values on Test Set:")
-                results_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred_final}).head(10)
+                # For classification, use y_pred_final_classification
+                if model_choice in ["Random Forest Classifier", "Neural Network (MLP Classifier)"]:
+                    results_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred_final_classification}).head(10)
+                else: # For regression, use original y_pred
+                    results_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred}).head(10)
                 st.dataframe(results_df)
 
             except Exception as e:
