@@ -4,7 +4,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder, OrdinalEncoder # Added OrdinalEncoder
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -31,30 +31,34 @@ if uploaded_file:
     # Sidebar for data preprocessing and encoding options
     st.sidebar.header("⚙️ Data Preprocessing & Encoding")
     encoder_choices = {} # Dictionary to store user's encoder choices for each column
-    manual_ordinal_orders = {} # Dictionary to store manual ordinal orders
+    manual_numeric_mappings = {} # Dictionary to store manual numeric mappings for 'Custom Numeric Mapping'
+
     if categorical_cols:
         st.sidebar.write("Select encoding method for categorical columns:")
         for col in categorical_cols:
             # Create a selectbox in the sidebar for each categorical column
             encoder_choices[col] = st.sidebar.selectbox(
                 f"Encoder for '{col}'",
-                ("None", "Label Encoding", "One-Hot Encoding", "Ordinal Encoding (Manual Order)"),
+                ("None", "Label Encoding", "One-Hot Encoding", "Custom Numeric Mapping"),
                 key=f"encoder_choice_{col}" # Unique key for each selectbox
             )
-            
-            if encoder_choices[col] == "Ordinal Encoding (Manual Order)":
-                st.sidebar.markdown(f"**For '{col}':**")
+
+            if encoder_choices[col] == "Custom Numeric Mapping":
+                st.sidebar.markdown(f"**Define numeric mapping for '{col}':**")
                 unique_categories = df[col].astype(str).unique().tolist()
-                st.sidebar.info(f"Detected categories for '{col}': {', '.join(unique_categories)}")
-                manual_order_input = st.sidebar.text_area(
-                    f"Enter desired order for '{col}' (comma-separated, all categories required):",
-                    value=','.join(unique_categories), # Pre-fill with detected order as a hint
-                    key=f"manual_order_{col}"
-                )
-                manual_ordinal_orders[col] = [item.strip() for item in manual_order_input.split(',') if item.strip()]
+                manual_numeric_mappings[col] = {}
+                for category in unique_categories:
+                    value = st.sidebar.number_input(
+                        f"Value for '{category}'",
+                        key=f"manual_value_{col}_{category}",
+                        value=0.0,
+                        help=f"Enter the numeric value for the category '{category}'"
+                    )
+                    manual_numeric_mappings[col][category] = value
+                st.sidebar.markdown("---")
     else:
         st.sidebar.info("No categorical columns detected for encoding.")
-        
+
     # Get all column names from the original DataFrame
     all_columns = df.columns.tolist()
 
@@ -74,35 +78,30 @@ if uploaded_file:
     model_params = {}
     if model_choice == "Neural Network (MLP Classifier)":
         st.subheader("Neural Network (MLP) Parameters")
-        # Hidden layer sizes input
         hidden_layers_str = st.text_input(
             "Hidden Layer Sizes (e.g., '100,50' for 2 layers with 100 and 50 neurons)",
-            value="100", # Default value
+            value="100",
             help="Enter comma-separated integers for the number of neurons in each hidden layer."
         )
         try:
-            # Parse the string input into a tuple of integers
             model_params['hidden_layer_sizes'] = tuple(int(x.strip()) for x in hidden_layers_str.split(',') if x.strip())
             if not model_params['hidden_layer_sizes']:
                 st.warning("No valid hidden layer sizes entered. Using default (100,).")
                 model_params['hidden_layer_sizes'] = (100,)
         except ValueError:
             st.error("Invalid format for hidden layer sizes. Please enter comma-separated integers.")
-            model_params['hidden_layer_sizes'] = (100,) # Fallback to default
-        
-        # Activation function selection
+            model_params['hidden_layer_sizes'] = (100,)
+
         model_params['activation'] = st.selectbox(
             "Activation Function",
             ("relu", "tanh", "logistic", "identity"),
             help="The activation function for the hidden layer."
         )
-        # Solver selection
         model_params['solver'] = st.selectbox(
             "Solver for Weight Optimization",
             ("adam", "sgd", "lbfgs"),
             help="The solver for weight optimization."
         )
-        # Max iterations
         model_params['max_iter'] = st.number_input(
             "Maximum Iterations (Epochs)",
             min_value=50,
@@ -111,214 +110,224 @@ if uploaded_file:
             step=50,
             help="Maximum number of iterations for the solver to converge."
         )
-    
-    # Only enable the train button if features and target are selected
+
+    # --- Training Options ---
+    st.header("⚙️ Training Options")
+    test_size_percent = st.slider(
+        "Test Set Size Percentage",
+        min_value=10,
+        max_value=90,
+        value=20,
+        step=5,
+        help="Percentage of data to be used for the test set."
+    )
+    test_size_val = test_size_percent / 100.0
+
+    # Initialize threshold_classification to None, will only be set if applicable
+    threshold_classification = None
+
+    if feature_columns and target_column:
+        # Check if the target column is already numeric
+        is_target_numeric_before_processing = pd.api.types.is_numeric_dtype(df[target_column])
+        
+        # Temporarily get unique values for the target to determine if it's binary after potential auto-encoding
+        temp_y = df[target_column].copy()
+        if not is_target_numeric_before_processing:
+            try:
+                le_temp = LabelEncoder()
+                temp_y = le_temp.fit_transform(temp_y.astype(str))
+            except:
+                pass # If auto-encoding fails, it will be caught later
+
+        # Only show threshold option for binary classification after potential auto-encoding
+        if len(np.unique(temp_y)) == 2:
+            st.write("---") # Separator for visual clarity
+            st.subheader("Binary Classification Threshold")
+            st.info("Adjust this threshold to classify probabilities into classes.")
+            threshold_classification = st.slider(
+                "Prediction Threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5, # Default threshold
+                step=0.01,
+                help="Probability threshold for positive class classification (0.0 to 1.0)."
+            )
+
     if feature_columns and target_column:
         if st.button("Train Model", help="Click to apply selected preprocessing and train the model."):
             st.info("Applying selected encoders and training model...")
 
-            df_processed = df.copy() # Create a copy of the DataFrame to apply transformations
-
-            # Keep track of original feature columns selected by the user.
-            # This is crucial because One-Hot Encoding will replace original columns with new ones.
+            df_processed = df.copy()
             original_selected_features = list(feature_columns)
-            
-            # Apply encoding based on user choices from the sidebar
+
             for col in categorical_cols:
-                # Check if the column was chosen for encoding and still exists in the DataFrame
                 if col in encoder_choices and encoder_choices[col] != "None" and col in df_processed.columns:
-                    # Convert column to string type to handle potential mixed types before encoding
                     df_processed[col] = df_processed[col].astype(str)
 
                     if encoder_choices[col] == "Label Encoding":
                         try:
-                            # Apply Label Encoding (converts categories to numerical labels)
                             le = LabelEncoder()
                             df_processed[col] = le.fit_transform(df_processed[col])
                             st.write(f"Applied Label Encoding to '{col}'.")
                         except Exception as e:
                             st.error(f"Error applying Label Encoding to '{col}': {e}")
-                            st.stop() # Stop execution on error
+                            st.stop()
                     elif encoder_choices[col] == "One-Hot Encoding":
                         try:
-                            # Apply One-Hot Encoding (creates new binary columns for each category)
                             ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
-                            # Fit and transform the column, ensuring it's a 2D array for OHE
                             ohe_array = ohe.fit_transform(df_processed[[col]])
-                            # Create a new DataFrame from the one-hot encoded array with appropriate column names
                             ohe_df = pd.DataFrame(ohe_array, columns=ohe.get_feature_names_out([col]), index=df_processed.index)
-
-                            # Drop the original categorical column from the processed DataFrame
                             df_processed = df_processed.drop(columns=[col])
-                            
-                            # Concatenate the new one-hot encoded columns to the processed DataFrame
                             df_processed = pd.concat([df_processed, ohe_df], axis=1)
-
                             st.write(f"Applied One-Hot Encoding to '{col}'. New columns created: {', '.join(ohe_df.columns.tolist())}")
                         except Exception as e:
                             st.error(f"Error applying One-Hot Encoding to '{col}': {e}")
-                            st.stop() # Stop execution on error
-                    elif encoder_choices[col] == "Ordinal Encoding (Manual Order)":
+                            st.stop()
+                    elif encoder_choices[col] == "Custom Numeric Mapping":
                         try:
-                            desired_order = manual_ordinal_orders.get(col, [])
+                            mapping = manual_numeric_mappings.get(col, {})
                             actual_categories = df_processed[col].unique().tolist()
-                            
-                            # Check if all actual categories are present in the desired order
-                            if not all(cat in desired_order for cat in actual_categories):
-                                st.error(f"Error: For '{col}', the manual order is missing some detected categories. Please ensure all categories ({', '.join(actual_categories)}) are included in your specified order ({', '.join(desired_order)}).")
+                            missing_mappings = [cat for cat in actual_categories if cat not in mapping]
+                            if missing_mappings:
+                                st.error(f"Error: For '{col}', the following categories do not have a custom numeric mapping defined: {', '.join(missing_mappings)}. Please assign a value for all categories.")
                                 st.stop()
-                            
-                            # Check for extra categories in desired order not in actual data (optional but good practice)
-                            if not all(cat in actual_categories for cat in desired_order):
-                                extra_cats = [cat for cat in desired_order if cat not in actual_categories]
-                                st.warning(f"Warning: For '{col}', your manual order contains categories not found in the data: {', '.join(extra_cats)}. These will be ignored by the encoder.")
-
-                            # Apply Ordinal Encoding with the specified order
-                            oe = OrdinalEncoder(categories=[desired_order], handle_unknown='error') # 'error' will raise if unknown categories appear
-                            df_processed[col] = oe.fit_transform(df_processed[[col]])
-                            st.write(f"Applied Ordinal Encoding to '{col}' with manual order: {', '.join(desired_order)}.")
+                            df_processed[col] = df_processed[col].map(mapping)
+                            st.write(f"Applied Custom Numeric Mapping to '{col}': {mapping}")
                         except Exception as e:
-                            st.error(f"Error applying Ordinal Encoding to '{col}': {e}. Please check your manual order input.")
+                            st.error(f"Error applying Custom Numeric Mapping to '{col}': {e}. Please check your manual value inputs.")
                             st.stop()
 
-
-            # Now, identify the actual feature columns to use for the model from the processed DataFrame.
-            # This accounts for original features that might have been replaced by One-Hot Encoded columns.
             final_features_for_model = []
             for feat in original_selected_features:
                 if feat in df_processed.columns:
-                    # If the original feature still exists (e.g., it was numeric or label encoded)
                     final_features_for_model.append(feat)
                 else:
-                    # If the original feature was one-hot encoded, find the new OHE columns.
-                    # This assumes OHE column names start with the original column name as a prefix.
                     ohe_cols = [c for c in df_processed.columns if c.startswith(f"{feat}_")]
                     final_features_for_model.extend(ohe_cols)
-            
-            # Ensure all identified final features actually exist in the processed DataFrame
+
             final_features_for_model = [f for f in final_features_for_model if f in df_processed.columns]
 
             if not final_features_for_model:
                 st.error("No valid feature columns found after preprocessing. Please check your selections and encoding choices.")
-                st.stop() # Stop if no features are left
+                st.stop()
 
-            X = df_processed[final_features_for_model] # Features DataFrame
-            y = df_processed[target_column] # Target Series (name remains the same)
+            X = df_processed[final_features_for_model]
+            y = df_processed[target_column]
 
-            # --- Robust Numerical Conversion for Features (X) ---
             st.info("Converting all feature columns to numeric. Non-convertible values will become NaN.")
             for col in X.columns:
-                # Attempt to convert column to numeric, coercing errors to NaN
                 X[col] = pd.to_numeric(X[col], errors='coerce')
-            # --- End Robust Numerical Conversion ---
 
-            # Check if the target column is non-numeric. For classification, it needs to be numeric.
-            # Convert target to numeric using LabelEncoder if it's not already
             if not pd.api.types.is_numeric_dtype(y):
                 try:
                     le_target = LabelEncoder()
-                    y = le_target.fit_transform(y.astype(str)) # Convert target to string first
-                    # Store classes for later (e.g., confusion matrix labels)
-                    target_classes = le_target.classes_ 
+                    y = le_target.fit_transform(y.astype(str))
+                    target_classes = le_target.classes_
                     st.write(f"Auto-applied Label Encoding to target column '{target_column}' as it was non-numeric for classification.")
                 except Exception as e:
                     st.error(f"Error: Target column '{target_column}' is non-numeric and could not be auto-encoded. Please ensure it's suitable for classification: {e}")
                     st.stop()
             else:
-                target_classes = np.unique(y) # Get unique numeric classes directly
+                target_classes = np.unique(y)
 
-            # Ensure X and y have consistent indices, which is crucial after concatenating/dropping columns.
             X, y = X.align(y, join='inner', axis=0)
 
-            # Check for missing values after conversion and drop rows with NaNs
             if X.isnull().sum().sum() > 0 or pd.Series(y).isnull().sum() > 0:
                 initial_rows = len(X)
                 st.warning("Missing values detected in features or target after encoding/conversion. Dropping rows with NaNs.")
-                # Combine X and y temporarily to drop rows where either has NaN
                 combined_df = pd.concat([X, pd.Series(y, name='target')], axis=1).dropna()
                 X = combined_df[X.columns]
                 y = combined_df['target']
                 st.info(f"Dropped {initial_rows - len(X)} rows with missing values. Remaining samples: {len(X)}")
 
-            # Check if any valid data remains after processing and handling missing values
             if len(X) == 0:
                 st.error("No valid data remaining after preprocessing and handling missing values. Cannot train model.")
                 st.stop()
-            
-            # Split and train the model
+
             try:
-                # Ensure enough samples for splitting into train and test sets
                 if len(X) < 2:
                     st.error("Not enough samples in your dataset to split into train and test sets. Need at least 2 samples.")
                     st.stop()
                 
-                # Adjust test_size for very small datasets to ensure at least one sample in test set
-                test_size_val = 0.2
-                if len(X) * test_size_val < 1 and len(X) >=1: # If test set would be empty but data exists
-                    test_size_val = 1 / len(X) # Ensure at least one sample in test set
-                elif len(X) == 1:
-                     st.error("Cannot split a single sample into train and test sets.")
-                     st.stop()
+                # Check for minimum 2 samples per class for stratification
+                # Only attempt to stratify if all classes have at least 2 samples
+                stratify_needed = False
+                if pd.Series(y).nunique() > 1: # Only stratify if multiple classes exist
+                    class_counts = pd.Series(y).value_counts()
+                    if all(count >= 2 for count in class_counts):
+                        stratify_needed = True
+                    else:
+                        st.warning("Cannot perform stratified split because some classes have less than 2 members. Proceeding with non-stratified split.")
 
-
-                # Perform train-test split. Stratify if the target has multiple unique classes.
-                # Only stratify if target has more than one unique value
-                if pd.Series(y).nunique() > 1:
+                if stratify_needed:
                     X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=test_size_val, random_state=42, 
-                        stratify=y 
+                        X, y, test_size=test_size_val, random_state=42,
+                        stratify=y
                     )
-                else: # If target has only one unique value, stratification is not possible
+                else:
                     X_train, X_test, y_train, y_test = train_test_split(
                         X, y, test_size=test_size_val, random_state=42
                     )
 
-                # Check if the training target set has only one class, which causes issues for classifiers
                 if len(np.unique(y_train)) < 2:
                     st.error("Target variable in training set has only one class after split. Cannot train a classifier. Please check your data or target selection.")
                     st.stop()
-                
-                # Initialize and train the selected model
+
                 model = None
                 if model_choice == "Random Forest Classifier":
                     model = RandomForestClassifier(random_state=42)
                     st.subheader(f"Training Random Forest Classifier")
                 elif model_choice == "Neural Network (MLP Classifier)":
-                    # Ensure hidden_layer_sizes is a tuple
                     if 'hidden_layer_sizes' in model_params and not isinstance(model_params['hidden_layer_sizes'], tuple):
                          model_params['hidden_layer_sizes'] = (model_params['hidden_layer_sizes'],)
-                    
                     model = MLPClassifier(random_state=42, **model_params)
                     st.subheader(f"Training Neural Network (MLP Classifier)")
 
                 model.fit(X_train, y_train)
-                y_pred = model.predict(X_test)
+
+                # --- Apply threshold for binary classification if applicable ---
+                y_pred_final = None
+                if len(target_classes) == 2 and threshold_classification is not None:
+                    # Get probabilities for the positive class (assuming class 1 is positive)
+                    # Need to know which column corresponds to which class
+                    # For binary classification, predict_proba returns columns in sorted order of class labels.
+                    # We assume the LabelEncoder maps to 0 and 1, so 1 is the second column.
+                    y_proba = model.predict_proba(X_test)
+                    # Check if the model outputs probabilities for more than one class.
+                    # It's usually safe to assume the second column is the positive class probability if
+                    # the target was encoded to 0 and 1.
+                    if y_proba.shape[1] == 2:
+                        # y_proba[:, 1] is the probability of the positive class (class 1)
+                        y_pred_final = (y_proba[:, 1] >= threshold_classification).astype(int)
+                        st.write(f"Predictions made using a threshold of **{threshold_classification}**.")
+                    else:
+                        st.warning("Model's predict_proba output is not suitable for binary thresholding. Using direct predictions.")
+                        y_pred_final = model.predict(X_test) # Fallback to direct predict
+                else:
+                    y_pred_final = model.predict(X_test) # Use direct predict for non-binary or no threshold set
+
 
                 # --- Display Model Evaluation ---
                 st.success(f"✅ Model Trained! ({model_choice})")
                 st.subheader("📊 Model Evaluation")
-                
-                # Accuracy Score
-                acc = accuracy_score(y_test, y_pred)
+
+                # Use y_pred_final for all metrics
+                acc = accuracy_score(y_test, y_pred_final)
                 st.metric(label="Accuracy", value=f"{acc:.2f}")
 
-                # Classification Report
                 st.write("### Classification Report")
-                # Ensure labels are string for better report display if they were numeric
-                report = classification_report(y_test, y_pred, target_names=[str(c) for c in target_classes], output_dict=True)
-                # Convert to DataFrame for better display
+                report = classification_report(y_test, y_pred_final, target_names=[str(c) for c in target_classes], output_dict=True, zero_division=0)
                 st.dataframe(pd.DataFrame(report).T)
 
-                # Confusion Matrix
                 st.write("### Confusion Matrix")
-                cm = confusion_matrix(y_test, y_pred)
+                cm = confusion_matrix(y_test, y_pred_final)
                 fig, ax = plt.subplots(figsize=(6, 5))
                 sns.heatmap(
-                    cm, 
-                    annot=True, 
-                    fmt="d", 
-                    cmap="Blues", 
-                    xticklabels=[str(c) for c in target_classes], 
+                    cm,
+                    annot=True,
+                    fmt="d",
+                    cmap="Blues",
+                    xticklabels=[str(c) for c in target_classes],
                     yticklabels=[str(c) for c in target_classes],
                     ax=ax
                 )
@@ -326,9 +335,8 @@ if uploaded_file:
                 ax.set_xlabel('Predicted Label')
                 ax.set_title('Confusion Matrix')
                 st.pyplot(fig)
-                plt.close(fig) # Close the figure to free up memory
+                plt.close(fig)
 
-                # Feature Importances (for Random Forest only)
                 if model_choice == "Random Forest Classifier":
                     st.write("### Feature Importances (Random Forest)")
                     importances = model.feature_importances_
@@ -336,7 +344,7 @@ if uploaded_file:
                         'Feature': final_features_for_model,
                         'Importance': importances
                     }).sort_values(by='Importance', ascending=False)
-                    
+
                     fig_importance, ax_importance = plt.subplots(figsize=(10, 6))
                     sns.barplot(x='Importance', y='Feature', data=features_df, ax=ax_importance)
                     ax_importance.set_title('Feature Importances')
@@ -347,7 +355,7 @@ if uploaded_file:
 
                 st.write("---")
                 st.write("First 10 Actual vs. Predicted values on Test Set:")
-                results_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred}).head(10)
+                results_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred_final}).head(10)
                 st.dataframe(results_df)
 
             except Exception as e:
