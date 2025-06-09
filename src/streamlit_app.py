@@ -2,15 +2,18 @@ import streamlit as st
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.neural_network import MLPClassifier # New import for Neural Network
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
-import numpy as np # Used for checking numeric types
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Set wide layout for better display
 st.set_page_config(layout="wide") 
 
 st.title("🤖 ML Playground")
-st.write("Upload a CSV file, select target and features, and train a model!")
+st.write("Upload a CSV file, select target and features, train a model, and see results!")
 
 # Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
@@ -48,6 +51,55 @@ if uploaded_file:
     target_column = st.selectbox("🎯 Select target column", all_columns)
     feature_columns = st.multiselect("🧠 Select feature columns", [col for col in all_columns if col != target_column])
 
+    # Model Selection
+    st.header("✨ Model Selection")
+    model_choice = st.selectbox(
+        "Choose your Machine Learning Model",
+        ("Random Forest Classifier", "Neural Network (MLP Classifier)")
+    )
+
+    # Model-specific parameters
+    model_params = {}
+    if model_choice == "Neural Network (MLP Classifier)":
+        st.subheader("Neural Network (MLP) Parameters")
+        # Hidden layer sizes input
+        hidden_layers_str = st.text_input(
+            "Hidden Layer Sizes (e.g., '100,50' for 2 layers with 100 and 50 neurons)",
+            value="100", # Default value
+            help="Enter comma-separated integers for the number of neurons in each hidden layer."
+        )
+        try:
+            # Parse the string input into a tuple of integers
+            model_params['hidden_layer_sizes'] = tuple(int(x.strip()) for x in hidden_layers_str.split(',') if x.strip())
+            if not model_params['hidden_layer_sizes']:
+                st.warning("No valid hidden layer sizes entered. Using default (100,).")
+                model_params['hidden_layer_sizes'] = (100,)
+        except ValueError:
+            st.error("Invalid format for hidden layer sizes. Please enter comma-separated integers.")
+            model_params['hidden_layer_sizes'] = (100,) # Fallback to default
+        
+        # Activation function selection
+        model_params['activation'] = st.selectbox(
+            "Activation Function",
+            ("relu", "tanh", "logistic", "identity"),
+            help="The activation function for the hidden layer."
+        )
+        # Solver selection
+        model_params['solver'] = st.selectbox(
+            "Solver for Weight Optimization",
+            ("adam", "sgd", "lbfgs"),
+            help="The solver for weight optimization."
+        )
+        # Max iterations
+        model_params['max_iter'] = st.number_input(
+            "Maximum Iterations (Epochs)",
+            min_value=50,
+            max_value=2000,
+            value=200,
+            step=50,
+            help="Maximum number of iterations for the solver to converge."
+        )
+    
     # Only enable the train button if features and target are selected
     if feature_columns and target_column:
         if st.button("Train Model", help="Click to apply selected preprocessing and train the model."):
@@ -125,15 +177,19 @@ if uploaded_file:
                 st.stop()
             
             # Check if the target column is non-numeric. For classification, it needs to be numeric.
+            # Convert target to numeric using LabelEncoder if it's not already
             if not pd.api.types.is_numeric_dtype(y):
-                # If target is non-numeric, try to auto-apply Label Encoding
                 try:
                     le_target = LabelEncoder()
                     y = le_target.fit_transform(y)
+                    # Store classes for later (e.g., confusion matrix labels)
+                    target_classes = le_target.classes_ 
                     st.write(f"Auto-applied Label Encoding to target column '{target_column}' as it was non-numeric for classification.")
                 except Exception as e:
                     st.error(f"Error: Target column '{target_column}' is non-numeric and could not be auto-encoded. Please ensure it's suitable for classification: {e}")
                     st.stop()
+            else:
+                target_classes = np.unique(y) # Get unique numeric classes directly
 
             # Ensure X and y have consistent indices, which is crucial after concatenating/dropping columns.
             X, y = X.align(y, join='inner', axis=0)
@@ -162,37 +218,93 @@ if uploaded_file:
                 
                 # Adjust test_size for very small datasets to ensure at least one sample in test set
                 test_size_val = 0.2
-                if len(X) * test_size_val < 1: 
-                    if len(X) > 1:
-                        test_size_val = 1 / len(X) 
-                    else:
-                        test_size_val = 0.0 # Will be caught by len(X) < 2 check above
+                if len(X) * test_size_val < 1 and len(X) >=1: # If test set would be empty but data exists
+                    test_size_val = 1 / len(X) # Ensure at least one sample in test set
+                elif len(X) == 1:
+                     st.error("Cannot split a single sample into train and test sets.")
+                     st.stop()
+
 
                 # Perform train-test split. Stratify if the target has multiple unique classes.
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=test_size_val, random_state=42, 
-                    stratify=y if pd.Series(y).nunique() > 1 and len(y.value_counts()) > 1 else None
-                )
-                
+                # Only stratify if target has more than one unique value
+                if pd.Series(y).nunique() > 1:
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=test_size_val, random_state=42, 
+                        stratify=y 
+                    )
+                else: # If target has only one unique value, stratification is not possible
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=test_size_val, random_state=42
+                    )
+
                 # Check if the training target set has only one class, which causes issues for classifiers
                 if len(np.unique(y_train)) < 2:
                     st.error("Target variable in training set has only one class after split. Cannot train a classifier. Please check your data or target selection.")
                     st.stop()
+                
+                # Initialize and train the selected model
+                model = None
+                if model_choice == "Random Forest Classifier":
+                    model = RandomForestClassifier(random_state=42)
+                    st.subheader(f"Training Random Forest Classifier")
+                elif model_choice == "Neural Network (MLP Classifier)":
+                    model = MLPClassifier(random_state=42, **model_params)
+                    st.subheader(f"Training Neural Network (MLP Classifier)")
 
-                # Initialize and train the RandomForestClassifier model
-                model = RandomForestClassifier(random_state=42) # random_state for reproducibility
                 model.fit(X_train, y_train)
                 y_pred = model.predict(X_test)
 
-                # Calculate and display accuracy score
+                # --- Display Model Evaluation ---
+                st.success(f"✅ Model Trained! ({model_choice})")
+                st.subheader("📊 Model Evaluation")
+                
+                # Accuracy Score
                 acc = accuracy_score(y_test, y_pred)
-                st.success(f"✅ Model Trained! Accuracy: {acc:.2f}")
+                st.metric(label="Accuracy", value=f"{acc:.2f}")
 
-                # Display model evaluation details
-                st.subheader("Model Evaluation")
-                st.write(f"**Selected Features (After Encoding):** {', '.join(final_features_for_model)}")
-                st.write(f"**Target Column:** {target_column}")
-                st.write(f"**Test Set Accuracy:** {acc:.2f}")
+                # Classification Report
+                st.write("### Classification Report")
+                # Ensure labels are string for better report display if they were numeric
+                report = classification_report(y_test, y_pred, target_names=[str(c) for c in target_classes], output_dict=True)
+                # Convert to DataFrame for better display
+                st.dataframe(pd.DataFrame(report).T)
+
+                # Confusion Matrix
+                st.write("### Confusion Matrix")
+                cm = confusion_matrix(y_test, y_pred)
+                fig, ax = plt.subplots(figsize=(6, 5))
+                sns.heatmap(
+                    cm, 
+                    annot=True, 
+                    fmt="d", 
+                    cmap="Blues", 
+                    xticklabels=[str(c) for c in target_classes], 
+                    yticklabels=[str(c) for c in target_classes],
+                    ax=ax
+                )
+                ax.set_ylabel('Actual Label')
+                ax.set_xlabel('Predicted Label')
+                ax.set_title('Confusion Matrix')
+                st.pyplot(fig)
+                plt.close(fig) # Close the figure to free up memory
+
+                # Feature Importances (for Random Forest only)
+                if model_choice == "Random Forest Classifier":
+                    st.write("### Feature Importances (Random Forest)")
+                    importances = model.feature_importances_
+                    features_df = pd.DataFrame({
+                        'Feature': final_features_for_model,
+                        'Importance': importances
+                    }).sort_values(by='Importance', ascending=False)
+                    
+                    fig_importance, ax_importance = plt.subplots(figsize=(10, 6))
+                    sns.barplot(x='Importance', y='Feature', data=features_df, ax=ax_importance)
+                    ax_importance.set_title('Feature Importances')
+                    ax_importance.set_xlabel('Importance')
+                    ax_importance.set_ylabel('Feature')
+                    st.pyplot(fig_importance)
+                    plt.close(fig_importance)
+
                 st.write("---")
                 st.write("First 10 Actual vs. Predicted values on Test Set:")
                 results_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred}).head(10)
@@ -200,7 +312,7 @@ if uploaded_file:
 
             except Exception as e:
                 st.error(f"An error occurred during model training or splitting: {e}")
-                st.write("Please ensure your selected features and target are numeric after encoding and suitable for the chosen model. Also check for sufficient data for splitting.")
+                st.write("Please ensure your selected features and target are numeric after encoding and suitable for the chosen model. Also check for sufficient data for splitting. For MLP, consider adjusting parameters like `max_iter` or `hidden_layer_sizes` if convergence warnings occur.")
     elif uploaded_file:
         st.warning("Please select both target and feature columns to enable model training.")
 elif uploaded_file is None:
