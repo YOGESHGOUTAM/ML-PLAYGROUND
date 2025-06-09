@@ -72,11 +72,18 @@ if uploaded_file:
         temp_target_series = df[target_column].copy()
         temp_target_series = pd.to_numeric(temp_target_series, errors='coerce').dropna()
 
-        if pd.api.types.is_numeric_dtype(temp_target_series):
-            target_unique_values_count = temp_target_series.nunique()
-            # Heuristic: if more than 20 unique values or high ratio of unique to total, consider continuous
-            if target_unique_values_count / len(temp_target_series) > 0.05 or target_unique_values_count > 20:
-                is_target_continuous = True
+        # Add a check to prevent ZeroDivisionError if temp_target_series is empty
+        if len(temp_target_series) == 0:
+            st.warning(f"Target column '{target_column}' contains no valid numeric data after cleaning. Cannot determine if it's continuous or discrete.")
+            # Default to classification models if we can't determine, or stop further processing if preferred.
+            # For now, let's allow proceeding but issue warning.
+            # is_target_continuous will remain False.
+        else:
+            if pd.api.types.is_numeric_dtype(temp_target_series):
+                target_unique_values_count = temp_target_series.nunique()
+                # Heuristic: if more than 20 unique values or high ratio of unique to total, consider continuous
+                if target_unique_values_count / len(temp_target_series) > 0.05 or target_unique_values_count > 20:
+                    is_target_continuous = True
 
 
     # --- Feature-Target Relationship Plots ---
@@ -104,10 +111,12 @@ if uploaded_file:
 
                 # Determine if the selected feature is continuous or categorical for plotting
                 is_selected_feature_continuous = False
-                if pd.api.types.is_numeric_dtype(plot_df[selected_plot_feature + '_numeric'].dropna()):
-                    # Heuristic: if more than 10 unique values or high ratio, consider continuous
-                    if plot_df[selected_plot_feature + '_numeric'].nunique() / len(plot_df) > 0.05 or plot_df[selected_plot_feature + '_numeric'].nunique() > 10:
-                        is_selected_feature_continuous = True
+                # Check if the numeric column for the selected feature is not empty
+                if not plot_df[selected_plot_feature + '_numeric'].dropna().empty:
+                    if pd.api.types.is_numeric_dtype(plot_df[selected_plot_feature + '_numeric'].dropna()):
+                        # Heuristic: if more than 10 unique values or high ratio, consider continuous
+                        if plot_df[selected_plot_feature + '_numeric'].nunique() / len(plot_df[selected_plot_feature + '_numeric'].dropna()) > 0.05 or plot_df[selected_plot_feature + '_numeric'].nunique() > 10:
+                            is_selected_feature_continuous = True
 
                 # Drop NaNs that resulted from coercion for plotting
                 plot_df.dropna(subset=[selected_plot_feature + '_numeric', target_column + '_numeric'], inplace=True)
@@ -144,7 +153,10 @@ if uploaded_file:
 
                     # Scenario 4: Target Categorical, Feature Categorical
                     else: # Both are categorical
-                        # Create a crosstab for counts
+                        # Ensure both columns for crosstab are treated as categorical strings
+                        plot_df[selected_plot_feature] = plot_df[selected_plot_feature].astype(str)
+                        plot_df[target_column] = plot_df[target_column].astype(str)
+
                         crosstab_df = pd.crosstab(plot_df[selected_plot_feature], plot_df[target_column])
                         if not crosstab_df.empty:
                             sns.heatmap(crosstab_df, annot=True, fmt='d', cmap='Blues', ax=ax)
@@ -155,12 +167,12 @@ if uploaded_file:
                             plt.yticks(rotation=0)
                         else:
                             st.warning("Cannot plot heatmap: Crosstab result is empty for the selected categorical features.")
-                            plt.close(fig) # Close the figure immediately if not plotting
+                            plt.close(fig)
                             st.stop()
 
 
                     st.pyplot(fig)
-                    plt.close(fig) # Close the figure to free up memory
+                    plt.close(fig)
             else:
                 st.info("Select a feature to see its relationship with the target.")
         else:
@@ -235,7 +247,6 @@ if uploaded_file:
 
     threshold_classification = None
 
-    # Only show threshold option for binary classification and if a classifier is selected
     if target_column and not is_target_continuous and model_choice in ["Random Forest Classifier", "Neural Network (MLP Classifier)"]:
         temp_y_for_threshold_check = df[target_column].copy()
         if not pd.api.types.is_numeric_dtype(temp_y_for_threshold_check):
@@ -281,7 +292,7 @@ if uploaded_file:
                             ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
                             ohe_array = ohe.fit_transform(df_processed[[col]])
                             ohe_df = pd.DataFrame(ohe_array, columns=ohe.get_feature_names_out([col]), index=df_processed.index)
-                            df_processed = df_processed.drop(columns=[col])
+                            df_processed = df.drop(columns=[col]) # Should be df_processed here
                             df_processed = pd.concat([df_processed, ohe_df], axis=1)
                             st.write(f"Applied One-Hot Encoding to '{col}'. New columns created: {', '.join(ohe_df.columns.tolist())}")
                         except Exception as e:
